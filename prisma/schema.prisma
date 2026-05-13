@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum AccountStatus {
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+enum TransactionStatus {
+  PENDING
+  BOOKED
+  REJECTED
+}
+
+enum TransactionType {
+  DEBIT
+  CREDIT
+}
+
+enum TransferStatus {
+  PENDING
+  SCHEDULED
+  COMPLETED
+  REJECTED
+}
+
+enum CardStatus {
+  ACTIVE
+  TEMP_BLOCKED
+  PERM_BLOCKED
+}
+
+enum CardRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum NotificationType {
+  INFO
+  WARNING
+  SECURITY
+}
+
+enum OtpPurpose {
+  LOGIN
+  TRANSFER
+}
+
+enum FraudStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  DISMISSED
+}
+
+enum RealtimeEventType {
+  NOTIFICATION
+  BALANCE_UPDATE
+}
+
+enum RealtimeEventStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  phone        String?
+  locale       String     @default("fr")
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  roles                UserRole[]
+  accounts             Account[]
+  cards                Card[]
+  cardRequests         CardRequest[]       @relation("CardRequests")
+  reviewedCardRequests CardRequest[]       @relation("CardRequestReviews")
+  notifications        Notification[]
+  refreshTokens        RefreshSession[]
+  otpChallenges        OtpChallenge[]
+  auditLogs            AuditLog[]
+  beneficiaries        Beneficiary[]
+  scheduled            ScheduledTransfer[]
+  realtimeEvents       RealtimeEvent[]
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions RolePermission[]
+  users       UserRole[]
+}
+
+model Permission {
+  id          String  @id @default(uuid())
+  key         String  @unique
+  description String?
+
+  roles RolePermission[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@id([userId, roleId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+}
+
+model Account {
+  id        String        @id @default(uuid())
+  userId    String
+  label     String
+  iban      String        @unique
+  currency  String
+  balance   Decimal       @default(0)
+  status    AccountStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  user               User                @relation(fields: [userId], references: [id])
+  transactions       Transaction[]
+  cards              Card[]
+  cardRequests       CardRequest[]
+  transfersOut       Transfer[]          @relation("TransfersOut")
+  transfersIn        Transfer[]          @relation("TransfersIn")
+  beneficiaries      Beneficiary[]       @relation("AccountBeneficiaries")
+  scheduledTransfers ScheduledTransfer[]
+}
+
+model Transaction {
+  id               String            @id @default(uuid())
+  accountId        String
+  type             TransactionType
+  amount           Decimal
+  currency         String
+  description      String?
+  status           TransactionStatus @default(PENDING)
+  counterpartyName String?
+  counterpartyIban String?
+  bookedAt         DateTime?
+  createdAt        DateTime          @default(now())
+
+  account   Account    @relation(fields: [accountId], references: [id])
+  fraudCase FraudCase?
+}
+
+model Transfer {
+  id            String         @id @default(uuid())
+  fromAccountId String
+  toAccountId   String?
+  beneficiaryId String?
+  externalName  String?
+  externalIban  String?
+  amount        Decimal
+  currency      String
+  status        TransferStatus @default(PENDING)
+  scheduledAt   DateTime?
+  executedAt    DateTime?
+  createdAt     DateTime       @default(now())
+
+  fromAccount Account      @relation("TransfersOut", fields: [fromAccountId], references: [id])
+  toAccount   Account?     @relation("TransfersIn", fields: [toAccountId], references: [id])
+  beneficiary Beneficiary? @relation(fields: [beneficiaryId], references: [id])
+}
+
+model Beneficiary {
+  id        String   @id @default(uuid())
+  userId    String
+  accountId String?
+  name      String
+  iban      String
+  bankName  String?
+  label     String?
+  createdAt DateTime @default(now())
+
+  user               User                @relation(fields: [userId], references: [id])
+  account            Account?            @relation("AccountBeneficiaries", fields: [accountId], references: [id])
+  transfers          Transfer[]
+  scheduledTransfers ScheduledTransfer[]
+}
+
+model ScheduledTransfer {
+  id            String         @id @default(uuid())
+  userId        String
+  fromAccountId String
+  beneficiaryId String
+  amount        Decimal
+  currency      String
+  scheduledAt   DateTime
+  status        TransferStatus @default(SCHEDULED)
+  createdAt     DateTime       @default(now())
+
+  user        User        @relation(fields: [userId], references: [id])
+  fromAccount Account     @relation(fields: [fromAccountId], references: [id])
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id])
+}
+
+model Card {
+  id        String     @id @default(uuid())
+  userId    String
+  accountId String
+  panLast4  String
+  provider  String
+  status    CardStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  user         User              @relation(fields: [userId], references: [id])
+  account      Account           @relation(fields: [accountId], references: [id])
+  limits       CardLimit?
+  transactions CardTransaction[]
+}
+
+model CardRequest {
+  id              String            @id @default(uuid())
+  userId          String
+  accountId       String
+  provider        String            @default("VISA")
+  status          CardRequestStatus @default(PENDING)
+  reviewedById    String?
+  reviewedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  user       User    @relation("CardRequests", fields: [userId], references: [id])
+  account    Account @relation(fields: [accountId], references: [id])
+  reviewedBy User?   @relation("CardRequestReviews", fields: [reviewedById], references: [id])
+}
+
+model CardLimit {
+  id        String   @id @default(uuid())
+  cardId    String   @unique
+  daily     Decimal  @default(1000)
+  monthly   Decimal  @default(5000)
+  atmDaily  Decimal  @default(500)
+  updatedAt DateTime @updatedAt
+
+  card Card @relation(fields: [cardId], references: [id])
+}
+
+model CardTransaction {
+  id         String            @id @default(uuid())
+  cardId     String
+  amount     Decimal
+  currency   String
+  merchant   String
+  status     TransactionStatus @default(PENDING)
+  occurredAt DateTime
+
+  card Card @relation(fields: [cardId], references: [id])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType @default(INFO)
+  title     String
+  message   String
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model RefreshSession {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  ip        String?
+  userAgent String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model OtpChallenge {
+  id         String     @id @default(uuid())
+  userId     String
+  purpose    OtpPurpose
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  entity    String
+  entityId  String
+  ip        String?
+  userAgent String?
+  metadata  Json
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model FraudCase {
+  id            String      @id @default(uuid())
+  transactionId String      @unique
+  status        FraudStatus @default(OPEN)
+  riskScore     Int
+  reason        String
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+}
+
+model RealtimeEvent {
+  id               String              @id @default(uuid())
+  userId           String
+  eventType        RealtimeEventType
+  status           RealtimeEventStatus @default(PENDING)
+  payload          Json
+  deliveryAttempts Int                 @default(0)
+  deliveredAt      DateTime?
+  lastError        String?
+  createdAt        DateTime            @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
